@@ -78,13 +78,16 @@ def player_effect(stdscr, sy, sx, color_pair, term_h, term_w):
         stdscr.refresh()
         curses.napms(60)
 
-# ─── Drawing the game world ──────────────────────────────────────
 def draw_game(stdscr, chunks, player_gy, player_gx, view_gy, view_gx,
               score, lives, message, message_timer, term_h, term_w,
               debug_info=None):
     stdscr.clear()
-    for sy in range(term_h - 1):          # leave last line for UI
-        for sx in range(term_w):
+    
+    # Get REAL current screen dimensions (may differ from passed term_w/term_h after resize)
+    real_h, real_w = stdscr.getmaxyx()
+    
+    for sy in range(real_h - 1):          # leave last line for UI
+        for sx in range(real_w):
             gy = view_gy + sy
             gx = view_gx + sx
             cx = gx // CHUNK_WIDTH
@@ -105,27 +108,42 @@ def draw_game(stdscr, chunks, player_gy, player_gx, view_gy, view_gx,
                         pair = curses.color_pair(COL_ENEMY)
                     else:
                         pair = curses.color_pair(COL_GROUND)
-                    stdscr.addch(sy, sx, char, pair)
+                    # Safety: only addch if within bounds
+                    if 0 <= sy < real_h - 1 and 0 <= sx < real_w:
+                        stdscr.addch(sy, sx, char, pair)
                 else:
-                    stdscr.addch(sy, sx, '·', curses.color_pair(COL_UNDISCOVERED))
+                    if 0 <= sy < real_h - 1 and 0 <= sx < real_w:
+                        stdscr.addch(sy, sx, '·', curses.color_pair(COL_UNDISCOVERED))
             else:
-                stdscr.addch(sy, sx, '·', curses.color_pair(COL_UNDISCOVERED))
+                if 0 <= sy < real_h - 1 and 0 <= sx < real_w:
+                    stdscr.addch(sy, sx, '·', curses.color_pair(COL_UNDISCOVERED))
+    
     # Player
     player_sy = player_gy - view_gy
     player_sx = player_gx - view_gx
-    if 0 <= player_sy < term_h - 1 and 0 <= player_sx < term_w:
+    if 0 <= player_sy < real_h - 1 and 0 <= player_sx < real_w:
         stdscr.addch(player_sy, player_sx, '@', curses.color_pair(COL_PLAYER) | curses.A_BOLD)
-    # UI bar (bottom line)
-    ui_y = term_h - 1
+    
+    # UI bar (bottom line) – safely construct and pad
+    ui_y = real_h - 1
     if debug_info is not None:
-        stdscr.addstr(ui_y, 0, debug_info[:term_w])
+        line = debug_info[:real_w-1].ljust(real_w - 1)
     elif message_timer > 0 and message:
-        stdscr.addstr(ui_y, 0, message[:term_w])
+        line = message[:real_w-1].ljust(real_w - 1)
     else:
         status = f"Score: {score}  Lives: {lives}  [WASD] hold for diagonal  [Q] quit"
-        stdscr.addstr(ui_y, 0, status[:term_w])
+        line = status[:real_w-1].ljust(real_w - 1)
+    
+    try:
+        stdscr.addstr(ui_y, 0, line)
+    except curses.error:
+        # Final fallback: just print what fits
+        try:
+            stdscr.addstr(ui_y, 0, line[:real_w-1])
+        except:
+            pass
+    
     stdscr.refresh()
-
 # ─── Main game logic ─────────────────────────────────────────────
 def main(stdscr):
     curses.curs_set(0)
@@ -209,6 +227,7 @@ def main(stdscr):
         draw_game(stdscr, chunks, player_gy, player_gx, view_gy, view_gx,
                   score, lives, message, message_timer, term_h, term_w,
                   debug_info)
+        term_h, term_w = stdscr.getmaxyx()
 
         if message_timer > 0:
             message_timer -= 1
@@ -216,7 +235,10 @@ def main(stdscr):
                 message = ""
 
         # ── Input (keyboard library for simultaneous keys) ─────
-        if keyboard.is_pressed('q'):
+        try:
+            if keyboard.is_pressed('q'):
+                break
+        except Exception:
             break
 
         dy, dx = 0, 0
@@ -267,8 +289,7 @@ def main(stdscr):
                 if 0 <= psy2 < term_h - 1 and 0 <= psx2 < term_w:
                     player_effect(stdscr, psy2, psx2,
                                   curses.color_pair(FLASH_REWARD), term_h, term_w)
-                draw_game(stdscr, chunks, player_gy, player_gx, view_gy, view_gx,
-                          score, lives, message, message_timer, term_h, term_w)
+                
         else:
             if tile_type == 'enemy':
                 lives -= 1
@@ -281,21 +302,74 @@ def main(stdscr):
                 if 0 <= psy2 < term_h - 1 and 0 <= psx2 < term_w:
                     player_effect(stdscr, psy2, psx2,
                                   curses.color_pair(FLASH_ENEMY), term_h, term_w)
-                draw_game(stdscr, chunks, player_gy, player_gx, view_gy, view_gx,
-                          score, lives, message, message_timer, term_h, term_w)
+                
 
         reveal_around_global(chunks, player_gy, player_gx, 5)
         time.sleep(0.01)
 
     # ─── Game Over / Quit ────────────────────────────────────────
-    stdscr.clear()
-    if lives <= 0:
-        msg = f"GAME OVER! Final score: {score}  Press any key to exit"
-    else:
-        msg = f"You quit. Final score: {score}  Press any key to exit"
-    stdscr.addstr(term_h // 2, (term_w - len(msg)) // 2, msg)
-    stdscr.refresh()
-    keyboard.read_key(suppress=True)
+        # ─── Game Over / Quit ────────────────────────────────────────
+    try:
+        stdscr.clear()
+        if lives <= 0:
+            msg = f"GAME OVER! Final score: {score}  Press any key to exit"
+        else:
+            msg = f"You quit. Final score: {score}  Press any key to exit"
+        
+        # Get current terminal size
+        h, w = stdscr.getmaxyx()
+        
+        # Truncate message if needed
+        msg = msg[:w-1] if w > 1 else msg
+        
+        # Calculate position safely
+        y = max(0, h // 2)
+        x = max(0, (w - len(msg)) // 2)
+        
+        # Try to display the message
+        if h > 0 and w > 0:
+            try:
+                stdscr.addstr(y, x, msg)
+            except curses.error:
+                # If addstr fails, try addch for each character
+                for i, ch in enumerate(msg):
+                    try:
+                        if x + i < w:
+                            stdscr.addch(y, x + i, ch)
+                    except curses.error:
+                        pass
+        
+        stdscr.refresh()
+        
+        # Small delay to show the message
+        time.sleep(0.5)
+        
+        # Wait for any key using keyboard library
+        keyboard.read_key(suppress=True)
+        
+    except Exception:
+        # If anything fails, just exit gracefully
+        pass
+    finally:
+        # Don't call curses.endwin() here - let the menu handle it
+        pass
+    return score  # Return the final score
+
+
+# Add this function at the end of your game file (indexai.py)
+def run():
+    """Run the game - can be called from menu or directly."""
+    try:
+        curses.wrapper(main)
+    except curses.error:
+        # Curses error - likely terminal issues
+        pass
+    except KeyboardInterrupt:
+        # User pressed Ctrl+C
+        pass
+    except Exception as e:
+        print(f"Game crashed: {e}")
+        input("Press Enter to continue...")
 
 if __name__ == "__main__":
-    curses.wrapper(main)
+    run()
