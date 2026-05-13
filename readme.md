@@ -44,22 +44,6 @@ Python 3.7+
 
 curses (built-in on Linux/macOS; on Windows use windows-curses)
 
-Setup
-bash
-# Clone the repository
-git clone https://github.com/yourusername/your-game-repo.git
-cd your-game-repo
-
-# (Optional but recommended) Create a virtual environment
-python -m venv venv
-source venv/bin/activate  # or venv\Scripts\activate on Windows
-
-# Install Windows curses if needed (Linux/macOS skip this)
-pip install windows-curses
-Run the Game
-bash
-python main.py
-(Adjust the entry point file name if needed)
 
 🧪 Current Development Focus
 Enemy pathfinding (basic chase behavior)
