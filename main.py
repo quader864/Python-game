@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Game launcher - run this to start the game with menu."""
 import menu
 

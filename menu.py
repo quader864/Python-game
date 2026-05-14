@@ -2,6 +2,7 @@ import curses
 import time
 import keyboard
 from src.game import run 
+from src import config 
 
 class GameMenu:
     """Animated terminal menu for the game."""
@@ -170,7 +171,10 @@ class GameMenu:
         h, w = stdscr.getmaxyx()
         last_key_time = 0
         key_delay = 0.15  # Prevent too-fast navigation
-        
+        while keyboard.is_pressed('enter') or keyboard.is_pressed('up') or \
+    keyboard.is_pressed('down') or keyboard.is_pressed('w') or \
+keyboard.is_pressed('s') or keyboard.is_pressed('q'):
+            time.sleep(0.01)    
         while self.running:
             # Handle resize
             c = stdscr.getch()
@@ -222,19 +226,48 @@ class GameMenu:
 
 
 class OptionsMenu:
-    """Options submenu (placeholder for future settings)."""
+    """Options submenu with real settings."""
     
     def __init__(self):
+        self._last_up = False
+        self._last_down = False
+        self._last_space = False
         self.options = [
-            "Game Speed: Normal",
-            "Enemy Difficulty: Normal",
-            "Color Theme: Classic",
-            "Sound: Off",
+            "Game Speed",
+            "Enemy Difficulty",
             "Back to Main Menu"
         ]
         self.selected = 0
         self.running = True
         
+        # Map settings to display names and values
+        self.speed_levels = ["Slow", "Normal", "Fast"]
+        self.speed_delays = [0.3, 0.18, 0.12]
+        self.difficulty_levels = ["Easy", "Normal", "Hard"]
+        self.difficulty_counts = [1, 3, 5]
+        
+        # Current index for each setting (read from config)
+        self.speed_index = self._index_of(self.speed_delays, config.ENEMY_MOVE_DELAY)
+        self.difficulty_index = self._index_of(self.difficulty_counts, config.ENEMY_SPAWN_COUNT)
+    
+    def _index_of(self, lst, value):
+        """Return index of value in list, default to 1 if not found."""
+        try:
+            return lst.index(value)
+        except ValueError:
+            return 1   # Normal
+    
+    def _get_display(self, option_idx):
+        """Build the full display string for each option."""
+        if option_idx == 0:      # Game Speed
+            level = self.speed_levels[self.speed_index]
+            return f"Game Speed: {level}"
+        elif option_idx == 1:    # Enemy Difficulty
+            level = self.difficulty_levels[self.difficulty_index]
+            return f"Enemy Difficulty: {level}"
+        else:
+            return self.options[option_idx]
+    
     def init_colors(self):
         curses.start_color()
         curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLACK)
@@ -252,12 +285,12 @@ class OptionsMenu:
         except curses.error:
             pass
         
-        for i, option in enumerate(self.options):
+        for i in range(len(self.options)):
             y = title_y + 3 + i
             if y >= h - 2:
                 break
             
-            text = f"  {option}  "
+            text = f"  {self._get_display(i)}  "
             x = (w - len(text)) // 2
             
             if i == self.selected:
@@ -266,7 +299,7 @@ class OptionsMenu:
             else:
                 stdscr.addstr(y, x, text, curses.color_pair(1))
         
-        hint = "↑↓: Navigate  Enter: Select  B: Back"
+        hint = "↑↓: Navigate  Enter: Change  B: Back"
         try:
             stdscr.addstr(h - 2, (w - len(hint)) // 2, hint, 
                          curses.color_pair(3) | curses.A_DIM)
@@ -301,12 +334,24 @@ class OptionsMenu:
                     self.selected = (self.selected + 1) % len(self.options)
                     last_key_time = current_time
                 elif keyboard.is_pressed('enter'):
-                    if self.options[self.selected] == "Back to Main Menu":
+                    sel = self.selected
+                    if sel == 0:   # Game Speed
+                        self.speed_index = (self.speed_index + 1) % len(self.speed_levels)
+                        config.ENEMY_MOVE_DELAY = self.speed_delays[self.speed_index]
+                    elif sel == 1: # Enemy Difficulty
+                        self.difficulty_index = (self.difficulty_index + 1) % len(self.difficulty_levels)
+                        config.ENEMY_SPAWN_COUNT = self.difficulty_counts[self.difficulty_index]
+                    elif sel == 2: # Back
+                        # Wait for Enter to be released before returning
+                        while keyboard.is_pressed('enter'):
+                            time.sleep(0.01)
                         self.running = False
                         return "back"
-                    # Other options are placeholders
                     last_key_time = current_time
                 elif keyboard.is_pressed('b'):
+                    # Also wait for key release
+                    while keyboard.is_pressed('b'):
+                        time.sleep(0.01)
                     self.running = False
                     return "back"
             
@@ -317,6 +362,9 @@ class CreditsScreen:
     """Epic cinematic scrolling credits."""
     
     def __init__(self):
+        self._last_up = False
+        self._last_down = False
+        self._last_space = False
         self.credits_text = [
     "",
     "",
@@ -573,7 +621,7 @@ class CreditsScreen:
     "",
     "From Quader",
     "From Iran",
-    "From a week without internet",
+    "From 12 week without internet",
     "",
     "A game was born.",
     "",
@@ -674,49 +722,63 @@ class CreditsScreen:
         speed_multiplier = 1.0
         
         while offset < max_offset:
-            # Handle resize
+            # --- Handle resize (restored) ---
             c = stdscr.getch()
             if c == curses.KEY_RESIZE:
                 h, w = stdscr.getmaxyx()
-            
-            # Handle input
-            try:
-                if keyboard.is_pressed('space'):
-                    paused = not paused
-                    time.sleep(0.3)  # Debounce
-                    last_scroll_time = time.time()
-                elif keyboard.is_pressed('up'):
+
+            current_time = time.time()
+            key_handled = False
+
+            # --- Up / W ---
+            if keyboard.is_pressed('up') or keyboard.is_pressed('w'):
+                if not self._last_up:
                     speed_multiplier = min(3.0, speed_multiplier + 0.1)
-                    last_scroll_time = time.time()
-                elif keyboard.is_pressed('down'):
+                    last_scroll_time = current_time
+                    key_handled = True
+                    self._last_up = True
+            else:
+                self._last_up = False
+
+            # --- Down / S ---
+            if keyboard.is_pressed('down') or keyboard.is_pressed('s'):
+                if not self._last_down:
                     speed_multiplier = max(0.1, speed_multiplier - 0.1)
-                    last_scroll_time = time.time()
-                elif keyboard.is_pressed('enter') or keyboard.is_pressed('q') or \
-                     keyboard.is_pressed('b') or keyboard.is_pressed('esc'):
-                    # Skip to end with fast animation
-                    while offset < max_offset:
-                        offset += 2
-                        self.draw_frame(stdscr, h, w, int(offset))
-                        time.sleep(0.5)
-                    time.sleep(0.5)
-                    return "back"
-            except Exception:
-                pass
+                    last_scroll_time = current_time
+                    key_handled = True
+                    self._last_down = True
+            else:
+                self._last_down = False
+
+            # --- Space (pause) ---
+            if keyboard.is_pressed('space'):
+                if not self._last_space:
+                    paused = not paused
+                    last_scroll_time = current_time
+                    key_handled = True
+                    self._last_space = True
+            else:
+                self._last_space = False
+
+            # --- Exit keys ---
+            if keyboard.is_pressed('enter') or keyboard.is_pressed('q') or \
+            keyboard.is_pressed('b') or keyboard.is_pressed('esc'):
+                while keyboard.is_pressed('enter') or keyboard.is_pressed('q') or \
+                    keyboard.is_pressed('b') or keyboard.is_pressed('esc'):
+                    time.sleep(0.01)
+                return "back"
+
+            if key_handled:
+                time.sleep(0.1)   # debounce
             
             # Auto-scroll with smooth timing
-            current_time = time.time()
             elapsed = current_time - last_scroll_time
-            
             if not paused and elapsed >= self.scroll_speed / speed_multiplier:
-                # Calculate how many lines to scroll based on elapsed time
                 lines_to_scroll = elapsed / (self.scroll_speed / speed_multiplier)
                 offset += lines_to_scroll
                 last_scroll_time = current_time
-            
-            # Draw current frame
+
             self.draw_frame(stdscr, h, w, int(offset))
-            
-            # Small sleep to prevent CPU spinning
             time.sleep(0.016)  # ~60 FPS
         
         # Final pause at the end
@@ -775,11 +837,26 @@ def show_menu():
                         # If curses restoration fails, restart the whole menu
                         pass
             elif result == "options":
+                # Flush held keys BEFORE launching the options screen
+                while keyboard.is_pressed('enter') or keyboard.is_pressed('b') or \
+                    keyboard.is_pressed('q') or keyboard.is_pressed('esc') or \
+                    keyboard.is_pressed('up') or keyboard.is_pressed('down') or \
+                    keyboard.is_pressed('w') or keyboard.is_pressed('s'):
+                    time.sleep(0.01)
                 options = OptionsMenu()
                 options.run(stdscr)
+    # … keep the existing flush after returning …
+
             elif result == "credits":
+                # Flush held keys BEFORE launching credits
+                while keyboard.is_pressed('enter') or keyboard.is_pressed('b') or \
+                    keyboard.is_pressed('q') or keyboard.is_pressed('esc') or \
+                    keyboard.is_pressed('up') or keyboard.is_pressed('down') or \
+                    keyboard.is_pressed('w') or keyboard.is_pressed('s'):
+                    time.sleep(0.01)
                 credits = CreditsScreen()
                 credits.run(stdscr)
+                # … existing flush after …
     
     curses.wrapper(menu_main)
 

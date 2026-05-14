@@ -2,18 +2,11 @@ import curses
 import random
 import keyboard
 import time
+from .constants import CHUNK_HEIGHT, CHUNK_WIDTH, TILE
+from .bot import Enemy
+from . import config
 
-# ─── Constants ───────────────────────────────────────────────────
-CHUNK_HEIGHT = 15   # tiles per chunk (rows)
-CHUNK_WIDTH  = 30   # tiles per chunk (columns)
-SCROLL_MARGIN = 3    # how close to screen edge before camera moves
-
-TILE = {
-    'wall':   {'char': '#', 'passable': False, 'name': 'Wall'},
-    'ground': {'char': '.', 'passable': True,  'name': 'Ground'},
-    'reward': {'char': '$', 'passable': True,  'name': 'Reward'},
-    'enemy':  {'char': 'E', 'passable': False, 'name': 'Enemy'},
-}
+SCROLL_MARGIN = 3
 
 COL_WALL         = 1
 COL_GROUND       = 2
@@ -40,16 +33,30 @@ def generate_chunk(cx, cy):
         rx = rng.randint(0, CHUNK_WIDTH - 1)
         if chunk[ry][rx]['type'] == 'ground':
             chunk[ry][rx] = {'type': 'reward', 'discovered': False}
-    for _ in range(3):
+    for _ in range(config.ENEMY_SPAWN_COUNT):
         ey = rng.randint(0, CHUNK_HEIGHT - 1)
         ex = rng.randint(0, CHUNK_WIDTH - 1)
         if chunk[ey][ex]['type'] == 'ground':
             chunk[ey][ex] = {'type': 'enemy', 'discovered': False}
     return chunk
 
+# ─── Convert static enemy tiles into dynamic Enemy objects ──────
+def spawn_enemies_from_chunk(chunks, enemies, cx, cy):
+    """Replace enemy tiles with ground and create Enemy objects."""
+    if (cx, cy) not in chunks:
+        return
+    chunk = chunks[(cx, cy)]
+    for ly in range(CHUNK_HEIGHT):
+        for lx in range(CHUNK_WIDTH):
+            if chunk[ly][lx]['type'] == 'enemy':
+                chunk[ly][lx] = {'type': 'ground', 'discovered': False}
+                gy = cy * CHUNK_HEIGHT + ly
+                gx = cx * CHUNK_WIDTH + lx
+                enemies.append(Enemy(gy, gx))
+
 # ─── Reveal around a global position ────────────────────────────
-def reveal_around_global(chunks, gy, gx, radius):
-    """Mark tiles within a square radius as discovered, generating chunks if needed."""
+def reveal_around_global(chunks, enemies, gy, gx, radius):
+    """Mark tiles as discovered, generate new chunks, spawn enemies."""
     for dy in range(-radius, radius + 1):
         for dx in range(-radius, radius + 1):
             ny = gy + dy
@@ -60,6 +67,7 @@ def reveal_around_global(chunks, gy, gx, radius):
             ly = ny % CHUNK_HEIGHT
             if (cx, cy) not in chunks:
                 chunks[(cx, cy)] = generate_chunk(cx, cy)
+                spawn_enemies_from_chunk(chunks, enemies, cx, cy)
             chunks[(cx, cy)][ly][lx]['discovered'] = True
 
 # ─── Player effect (ring animation) ─────────────────────────────
@@ -78,15 +86,13 @@ def player_effect(stdscr, sy, sx, color_pair, term_h, term_w):
         stdscr.refresh()
         curses.napms(60)
 
-def draw_game(stdscr, chunks, player_gy, player_gx, view_gy, view_gx,
+def draw_game(stdscr, chunks, enemies, player_gy, player_gx, view_gy, view_gx,
               score, lives, message, message_timer, term_h, term_w,
               debug_info=None):
     stdscr.clear()
-    
-    # Get REAL current screen dimensions (may differ from passed term_w/term_h after resize)
     real_h, real_w = stdscr.getmaxyx()
-    
-    for sy in range(real_h - 1):          # leave last line for UI
+
+    for sy in range(real_h - 1):
         for sx in range(real_w):
             gy = view_gy + sy
             gx = view_gx + sx
@@ -108,7 +114,6 @@ def draw_game(stdscr, chunks, player_gy, player_gx, view_gy, view_gx,
                         pair = curses.color_pair(COL_ENEMY)
                     else:
                         pair = curses.color_pair(COL_GROUND)
-                    # Safety: only addch if within bounds
                     if 0 <= sy < real_h - 1 and 0 <= sx < real_w:
                         stdscr.addch(sy, sx, char, pair)
                 else:
@@ -117,14 +122,30 @@ def draw_game(stdscr, chunks, player_gy, player_gx, view_gy, view_gx,
             else:
                 if 0 <= sy < real_h - 1 and 0 <= sx < real_w:
                     stdscr.addch(sy, sx, '·', curses.color_pair(COL_UNDISCOVERED))
-    
-    # Player
+
+    # ── Draw enemies (dynamic) ──────────────────────────────────
+        # ── Draw enemies (only if their current tile is discovered) ──
+    for enemy in enemies:
+        if enemy.alive:
+            ecx = enemy.gx // CHUNK_WIDTH
+            ecy = enemy.gy // CHUNK_HEIGHT
+            elx = enemy.gx % CHUNK_WIDTH
+            ely = enemy.gy % CHUNK_HEIGHT
+            if ((ecx, ecy) in chunks and 
+                chunks[(ecx, ecy)][ely][elx].get('discovered', False)):
+                esy = enemy.gy - view_gy
+                esx = enemy.gx - view_gx
+                if 0 <= esy < real_h - 1 and 0 <= esx < real_w:
+                    stdscr.addch(esy, esx, 'E', 
+                                 curses.color_pair(COL_ENEMY) | curses.A_BOLD)
+
+    # ── Draw player ─────────────────────────────────────────────
     player_sy = player_gy - view_gy
     player_sx = player_gx - view_gx
     if 0 <= player_sy < real_h - 1 and 0 <= player_sx < real_w:
         stdscr.addch(player_sy, player_sx, '@', curses.color_pair(COL_PLAYER) | curses.A_BOLD)
-    
-    # UI bar (bottom line) – safely construct and pad
+
+    # UI bar
     ui_y = real_h - 1
     if debug_info is not None:
         line = debug_info[:real_w-1].ljust(real_w - 1)
@@ -133,22 +154,22 @@ def draw_game(stdscr, chunks, player_gy, player_gx, view_gy, view_gx,
     else:
         status = f"Score: {score}  Lives: {lives}  [WASD] hold for diagonal  [Q] quit"
         line = status[:real_w-1].ljust(real_w - 1)
-    
+
     try:
         stdscr.addstr(ui_y, 0, line)
     except curses.error:
-        # Final fallback: just print what fits
         try:
             stdscr.addstr(ui_y, 0, line[:real_w-1])
         except:
             pass
-    
+
     stdscr.refresh()
+
 # ─── Main game logic ─────────────────────────────────────────────
 def main(stdscr):
     curses.curs_set(0)
-    stdscr.nodelay(True)          # getch() non‑blocking
-    stdscr.keypad(True)           # so we get KEY_RESIZE
+    stdscr.nodelay(True)
+    stdscr.keypad(True)
     curses.start_color()
     curses.init_pair(COL_WALL,         curses.COLOR_WHITE,   curses.COLOR_BLACK)
     curses.init_pair(COL_GROUND,       curses.COLOR_GREEN,   curses.COLOR_BLACK)
@@ -163,10 +184,13 @@ def main(stdscr):
 
     # World state
     chunks = {}
+    enemies = []                # dynamic enemies list
+    enemy_move_delay = config.ENEMY_MOVE_DELAY    # seconds between enemy moves
+    last_enemy_move_time = 0
+
     player_cx, player_cy = 0, 0
     player_lx = CHUNK_WIDTH // 2
     player_ly = CHUNK_HEIGHT // 2
-    # Global coordinates
     player_gx = player_cx * CHUNK_WIDTH + player_lx
     player_gy = player_cy * CHUNK_HEIGHT + player_ly
 
@@ -179,32 +203,34 @@ def main(stdscr):
             if 0 <= ny < CHUNK_HEIGHT and 0 <= nx < CHUNK_WIDTH:
                 chunks[(0, 0)][ny][nx] = {'type': 'ground', 'discovered': False}
 
-    # Initial camera: centre player on screen
+    # Spawn dynamic enemies from the initial chunk
+    spawn_enemies_from_chunk(chunks, enemies, 0, 0)
+
+    # Initial camera
     view_gy = player_gy - term_h // 2
     view_gx = player_gx - term_w // 2
 
-    reveal_around_global(chunks, player_gy, player_gx, 5)
+    reveal_around_global(chunks, enemies, player_gy, player_gx, 5)
 
     score, lives = 0, 3
     message, message_timer = "", 0
     move_delay = 0.08
     last_move_time = 0
-    DEBUG = False   # set True to see debug info on UI line
+    DEBUG = False
 
     while lives > 0:
-        # ── Let curses process its own resize event ─────────────
+        # Resize handling
         c = stdscr.getch()
         if c == curses.KEY_RESIZE:
             term_h, term_w = stdscr.getmaxyx()
             stdscr.clear()
-            # Keep player visible if they would be off‑screen
             psx = player_gx - view_gx
             psy = player_gy - view_gy
             if psx < 0 or psx >= term_w or psy < 0 or psy >= term_h - 1:
                 view_gy = player_gy - min(psy, max(0, (term_h - 2) - SCROLL_MARGIN))
                 view_gx = player_gx - min(psx, max(0, term_w - 1 - SCROLL_MARGIN))
 
-        # ── Edge‑scrolling camera ───────────────────────────────
+        # Edge scrolling
         psx = player_gx - view_gx
         psy = player_gy - view_gy
         if psx > term_w - 1 - SCROLL_MARGIN:
@@ -216,15 +242,14 @@ def main(stdscr):
         elif psy < SCROLL_MARGIN:
             view_gy = player_gy - SCROLL_MARGIN
 
-        # ── Debug info (if enabled) ────────────────────────────
+        # Debug info
+        debug_info = None
         if DEBUG:
             debug_info = (f"TERM:{term_h}x{term_w}  "
                           f"VIEW:{view_gy},{view_gx}  "
                           f"PL_SCR:{psy},{psx}")
-        else:
-            debug_info = None
 
-        draw_game(stdscr, chunks, player_gy, player_gx, view_gy, view_gx,
+        draw_game(stdscr, chunks, enemies, player_gy, player_gx, view_gy, view_gx,
                   score, lives, message, message_timer, term_h, term_w,
                   debug_info)
         term_h, term_w = stdscr.getmaxyx()
@@ -234,7 +259,8 @@ def main(stdscr):
             if message_timer == 0:
                 message = ""
 
-        # ── Input (keyboard library for simultaneous keys) ─────
+        # Quit check
+                # ── Input (keyboard library for simultaneous keys) ─────
         try:
             if keyboard.is_pressed('q'):
                 break
@@ -247,125 +273,113 @@ def main(stdscr):
         if keyboard.is_pressed('a'): dx -= 1
         if keyboard.is_pressed('d'): dx += 1
 
-        if dy == 0 and dx == 0:
-            time.sleep(0.02)
-            continue
+        # ── Player movement (only if a key is pressed and delay passed) ──
+        if dy != 0 or dx != 0:
+            now = time.time()
+            if now - last_move_time >= move_delay:
+                last_move_time = now
 
+                new_gy = player_gy + dy
+                new_gx = player_gx + dx
+                dest_cx = new_gx // CHUNK_WIDTH
+                dest_cy = new_gy // CHUNK_HEIGHT
+                dest_lx = new_gx % CHUNK_WIDTH
+                dest_ly = new_gy % CHUNK_HEIGHT
+
+                if (dest_cx, dest_cy) not in chunks:
+                    chunks[(dest_cx, dest_cy)] = generate_chunk(dest_cx, dest_cy)
+                    spawn_enemies_from_chunk(chunks, enemies, dest_cx, dest_cy)
+                    chunks[(dest_cx, dest_cy)][dest_ly][dest_lx] = {'type': 'ground', 'discovered': False}
+
+                target_tile = chunks[(dest_cx, dest_cy)][dest_ly][dest_lx]
+                tile_type = target_tile['type']
+
+                if TILE[tile_type]['passable']:
+                    player_gy, player_gx = new_gy, new_gx
+                    if tile_type == 'reward':
+                        score += 10
+                        target_tile['type'] = 'ground'
+                        target_tile['discovered'] = True
+                        message = "Reward collected! +10"
+                        message_timer = 5
+                        psy2 = player_gy - view_gy
+                        psx2 = player_gx - view_gx
+                        if 0 <= psy2 < term_h - 1 and 0 <= psx2 < term_w:
+                            player_effect(stdscr, psy2, psx2,
+                                          curses.color_pair(FLASH_REWARD), term_h, term_w)
+
+        # ── Reveal area always (even when idle, to light up new chunks) ──
+        reveal_around_global(chunks, enemies, player_gy, player_gx, 5)
+
+        # ── Enemy movement (runs every tick, independently of player) ──
         now = time.time()
-        if now - last_move_time < move_delay:
-            time.sleep(0.01)
-            continue
-        last_move_time = now
+        if now - last_enemy_move_time >= enemy_move_delay:
+            occupied_set = {(e.gy, e.gx) for e in enemies if e.alive}
+            player_hit_this_tick = False
 
-        # ── Movement ───────────────────────────────────────────
-        new_gy = player_gy + dy
-        new_gx = player_gx + dx
-        dest_cx = new_gx // CHUNK_WIDTH
-        dest_cy = new_gy // CHUNK_HEIGHT
-        dest_lx = new_gx % CHUNK_WIDTH
-        dest_ly = new_gy % CHUNK_HEIGHT
+            for enemy in enemies:
+                if not enemy.alive:
+                    continue
+                # Remove self from occupied so it can move
+                occupied_set.discard((enemy.gy, enemy.gx))
+                new_gy, new_gx = enemy.update(player_gy, player_gx, chunks, occupied_set)
 
-        if (dest_cx, dest_cy) not in chunks:
-            chunks[(dest_cx, dest_cy)] = generate_chunk(dest_cx, dest_cy)
-            chunks[(dest_cx, dest_cy)][dest_ly][dest_lx] = {'type': 'ground', 'discovered': False}
+                if new_gy == player_gy and new_gx == player_gx:
+                    if not player_hit_this_tick:
+                        lives -= 1
+                        player_hit_this_tick = True
+                    enemy.alive = False
+                    message = "Enemy hit! -1 life"
+                    message_timer = 5
+                    psy2 = player_gy - view_gy
+                    psx2 = player_gx - view_gx
+                    if 0 <= psy2 < term_h - 1 and 0 <= psx2 < term_w:
+                        player_effect(stdscr, psy2, psx2,
+                                      curses.color_pair(FLASH_ENEMY), term_h, term_w)
+                else:
+                    enemy.gy, enemy.gx = new_gy, new_gx
+                    occupied_set.add((new_gy, new_gx))
 
-        target_tile = chunks[(dest_cx, dest_cy)][dest_ly][dest_lx]
-        tile_type = target_tile['type']
+            last_enemy_move_time = now
 
-        if TILE[tile_type]['passable']:
-            player_gy, player_gx = new_gy, new_gx
-            player_cx = player_gx // CHUNK_WIDTH
-            player_cy = player_gy // CHUNK_HEIGHT
-            player_lx = player_gx % CHUNK_WIDTH
-            player_ly = player_gy % CHUNK_HEIGHT
-            if tile_type == 'reward':
-                score += 10
-                target_tile['type'] = 'ground'
-                target_tile['discovered'] = True
-                message = "Reward collected! +10"
-                message_timer = 5
-                psy2 = player_gy - view_gy
-                psx2 = player_gx - view_gx
-                if 0 <= psy2 < term_h - 1 and 0 <= psx2 < term_w:
-                    player_effect(stdscr, psy2, psx2,
-                                  curses.color_pair(FLASH_REWARD), term_h, term_w)
-                
-        else:
-            if tile_type == 'enemy':
-                lives -= 1
-                target_tile['type'] = 'ground'
-                target_tile['discovered'] = True
-                message = "Enemy hit! -1 life"
-                message_timer = 5
-                psy2 = player_gy - view_gy
-                psx2 = player_gx - view_gx
-                if 0 <= psy2 < term_h - 1 and 0 <= psx2 < term_w:
-                    player_effect(stdscr, psy2, psx2,
-                                  curses.color_pair(FLASH_ENEMY), term_h, term_w)
-                
-
-        reveal_around_global(chunks, player_gy, player_gx, 5)
         time.sleep(0.01)
 
     # ─── Game Over / Quit ────────────────────────────────────────
-        # ─── Game Over / Quit ────────────────────────────────────────
     try:
         stdscr.clear()
         if lives <= 0:
             msg = f"GAME OVER! Final score: {score}  Press any key to exit"
         else:
             msg = f"You quit. Final score: {score}  Press any key to exit"
-        
-        # Get current terminal size
         h, w = stdscr.getmaxyx()
-        
-        # Truncate message if needed
         msg = msg[:w-1] if w > 1 else msg
-        
-        # Calculate position safely
         y = max(0, h // 2)
         x = max(0, (w - len(msg)) // 2)
-        
-        # Try to display the message
         if h > 0 and w > 0:
             try:
                 stdscr.addstr(y, x, msg)
             except curses.error:
-                # If addstr fails, try addch for each character
                 for i, ch in enumerate(msg):
                     try:
                         if x + i < w:
                             stdscr.addch(y, x + i, ch)
                     except curses.error:
                         pass
-        
         stdscr.refresh()
-        
-        # Small delay to show the message
         time.sleep(0.5)
-        
-        # Wait for any key using keyboard library
         keyboard.read_key(suppress=True)
-        
-    except Exception:
-        # If anything fails, just exit gracefully
+    except:
         pass
     finally:
-        # Don't call curses.endwin() here - let the menu handle it
         pass
-    return score  # Return the final score
+    return score
 
-
-# Add this function at the end of your game file (indexai.py)
 def run():
-    """Run the game - can be called from menu or directly."""
     try:
         curses.wrapper(main)
     except curses.error:
-        # Curses error - likely terminal issues
         pass
     except KeyboardInterrupt:
-        # User pressed Ctrl+C
         pass
     except Exception as e:
         print(f"Game crashed: {e}")
