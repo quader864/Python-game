@@ -9,11 +9,11 @@ class Enemy:
         self.alive = True
 
     def update(self, player_gy, player_gx, chunks, occupied_positions):
-        """Try to move one step toward the player; return (new_gy, new_gx)."""
+        """Move one step toward the player using BFS pathfinding."""
         if not self.alive:
             return self.gy, self.gx
 
-        # Always check if we've been revealed for the first time
+        # Activate when the enemy's tile becomes discovered
         if not self.activated:
             cx = self.gx // CHUNK_WIDTH
             cy = self.gy // CHUNK_HEIGHT
@@ -21,41 +21,17 @@ class Enemy:
             ly = self.gy % CHUNK_HEIGHT
             if (cx, cy) in chunks and chunks[(cx, cy)][ly][lx].get('discovered', False):
                 self.activated = True
-
         if not self.activated:
-            return self.gy, self.gx   # still hidden, don't move
+            return self.gy, self.gx
 
-        # --- 1. Try simple greedy move (old behaviour) ---
-        dy = (player_gy > self.gy) - (player_gy < self.gy)
-        dx = (player_gx > self.gx) - (player_gx < self.gx)
-
-        # Try primary axis (vertical first, then horizontal)
-        if dy != 0:
-            cand_y, cand_x = self.gy + dy, self.gx
-            if self._is_passable(cand_y, cand_x, chunks, occupied_positions):
-                return cand_y, cand_x
-        if dx != 0:
-            cand_y, cand_x = self.gy, self.gx + dx
-            if self._is_passable(cand_y, cand_x, chunks, occupied_positions):
-                return cand_y, cand_x
-
-        # Fallback: try the other vertical direction
-        for alt_dy in (-1, 1):
-            if alt_dy == dy:
-                continue
-            cand_y, cand_x = self.gy + alt_dy, self.gx
-            if self._is_passable(cand_y, cand_x, chunks, occupied_positions):
-                return cand_y, cand_x
-
-        # --- 2. Greedy move failed → use BFS pathfinding ---
+        # Always use BFS to find the shortest path
         path = self._bfs_path(player_gy, player_gx, chunks, occupied_positions)
         if path and len(path) > 1:
-            # path[0] is current position, path[1] is the next step
             next_y, next_x = path[1]
             if self._is_passable(next_y, next_x, chunks, occupied_positions):
                 return next_y, next_x
 
-        # If nothing works, stay put
+        # If no path is found, stay in place
         return self.gy, self.gx
 
     def _is_passable(self, gy, gx, chunks, occupied):
@@ -73,23 +49,21 @@ class Enemy:
         return True
 
     def _bfs_path(self, target_gy, target_gx, chunks, occupied, max_dist=20):
-        """Return a list of (y,x) positions from self to target, or None."""
+        """Breadth‑first search from self to target, up to max_dist steps."""
         start = (self.gy, self.gx)
         goal = (target_gy, target_gx)
         if start == goal:
             return [start]
 
-        visited = {start: None}   # pos -> parent
+        visited = {start: None}
         queue = deque([start])
 
         while queue:
             y, x = queue.popleft()
-
-            # Stop if we've moved too far from start (performance limit)
             if abs(y - self.gy) + abs(x - self.gx) > max_dist:
                 continue
 
-            for dy, dx in [(-1,0),(1,0),(0,-1),(0,1)]:
+            for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 ny, nx = y + dy, x + dx
                 if (ny, nx) in visited:
                     continue
@@ -97,7 +71,7 @@ class Enemy:
                     continue
                 visited[(ny, nx)] = (y, x)
                 if (ny, nx) == goal:
-                    # reconstruct path
+                    # Reconstruct path
                     path = []
                     cur = goal
                     while cur is not None:
@@ -106,6 +80,4 @@ class Enemy:
                     path.reverse()
                     return path
                 queue.append((ny, nx))
-
-        # No path found within search radius
         return None
